@@ -88,13 +88,16 @@ router.post("/login", async (req: Request, res: Response) => {
 
 router.get("/me", async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  const xAuthHeader = req.headers["x-authorization"] as string | undefined;
+  const bearerHeader =
+    authHeader?.startsWith("Bearer ") ? authHeader : xAuthHeader;
+  if (!bearerHeader || !bearerHeader.startsWith("Bearer ")) {
     res.status(401).json({ error: "No token provided" });
     return;
   }
 
   try {
-    const token = authHeader.split(" ")[1];
+    const token = bearerHeader.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret") as {
       userId: string;
     };
