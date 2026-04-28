@@ -1,4 +1,5 @@
 import express from "express";
+import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
 import authRoutes from "./routes/auth";
@@ -22,6 +23,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/projects", projectRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/ai", aiRoutes);
+
+const frontendDist = path.join(__dirname, "../../frontend/dist");
+app.use(express.static(frontendDist));
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(frontendDist, "index.html"));
+});
 
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
