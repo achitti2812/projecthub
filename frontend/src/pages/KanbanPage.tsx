@@ -100,11 +100,23 @@ export default function KanbanPage() {
                             {task.description && (
                               <p>{task.description}</p>
                             )}
-                            <span
-                              className={`badge ${priorityClass[task.priority]}`}
-                            >
-                              {task.priority}
-                            </span>
+                            <div className="kanban-card-meta">
+                              <span
+                                className={`badge ${priorityClass[task.priority]}`}
+                              >
+                                {task.priority}
+                              </span>
+                              {task.assignee && (
+                                <span className="badge assignee-badge">
+                                  {task.assignee.name}
+                                </span>
+                              )}
+                              {task.user && (
+                                <span className="kanban-creator">
+                                  {task.user.name}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </Draggable>

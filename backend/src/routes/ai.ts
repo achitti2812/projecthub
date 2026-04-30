@@ -14,6 +14,7 @@ const aiActionSchema = z.discriminatedUnion("action", [
     status: z.enum(["TODO", "IN_PROGRESS", "DONE"]).optional(),
     priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
     projectId: z.string().optional(),
+    assigneeName: z.string().optional(),
   }),
   z.object({
     action: z.literal("update"),
@@ -27,6 +28,19 @@ const aiActionSchema = z.discriminatedUnion("action", [
     action: z.literal("delete"),
     taskIdentifier: z.string().min(1),
   }),
+  z.object({
+    action: z.literal("assign"),
+    taskIdentifier: z.string().min(1),
+    assigneeName: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("unassign"),
+    taskIdentifier: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("list"),
+    filter: z.enum(["all", "mine", "assigned_to_me", "unassigned"]).optional(),
+  }),
 ]);
 
 type AIAction = z.infer<typeof aiActionSchema>;
@@ -36,6 +50,29 @@ function parseUserInput(input: string): {
   followUp: string | null;
 } {
   const lower = input.toLowerCase().trim();
+
+  if (
+    lower.startsWith("assign") &&
+    !lower.startsWith("assigned")
+  ) {
+    return parseAssignIntent(lower);
+  }
+
+  if (
+    lower.startsWith("unassign") ||
+    (lower.startsWith("remove") && lower.includes("assignment"))
+  ) {
+    return parseUnassignIntent(lower);
+  }
+
+  if (
+    lower.startsWith("list") ||
+    lower.startsWith("show") ||
+    lower.startsWith("what") ||
+    lower.startsWith("get")
+  ) {
+    return parseListIntent(lower);
+  }
 
   if (
     lower.startsWith("create") ||
@@ -65,7 +102,13 @@ function parseUserInput(input: string): {
   return {
     parsed: null,
     followUp:
-      'I couldn\'t understand that command. Try something like:\n- "Create a high priority task to fix login bug"\n- "Move payment task to In Progress"\n- "Delete the task related to UI bug"',
+      'I couldn\'t understand that command. Try something like:\n' +
+      '- "Create a high priority task to fix login bug"\n' +
+      '- "Move payment task to In Progress"\n' +
+      '- "Delete the task related to UI bug"\n' +
+      '- "Assign login task to John"\n' +
+      '- "Show my tasks"\n' +
+      '- "List unassigned tasks"',
   };
 }
 
@@ -90,6 +133,14 @@ function parseCreateIntent(
   else if (lower.includes("done") || lower.includes("completed"))
     status = "DONE";
 
+  let assigneeName: string | undefined;
+  const assignMatch = lower.match(
+    /\b(?:assign(?:ed)?\s+to|for)\s+([a-z][a-z\s]*?)(?:\s+(?:with|as|in)\s+|$)/i
+  );
+  if (assignMatch) {
+    assigneeName = assignMatch[1].trim();
+  }
+
   const titlePatterns = [
     /(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?(?:(?:high|low|medium|urgent)\s*[-]?\s*priority\s+)?task\s+(?:to\s+|for\s+|called\s+|named\s+|about\s+)?(.+)/i,
     /(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?task\s*:\s*(.+)/i,
@@ -106,6 +157,8 @@ function parseCreateIntent(
           ""
         )
         .replace(/\b(to|in)\s+(in progress|done|to do)\b/gi, "")
+        .replace(/\b(?:assign(?:ed)?\s+to|for)\s+[a-z][a-z\s]*$/i, "")
+        .replace(/\band\s+assign.*$/i, "")
         .trim();
       break;
     }
@@ -120,7 +173,7 @@ function parseCreateIntent(
   }
 
   return {
-    parsed: { action: "create", title, priority, status },
+    parsed: { action: "create", title, priority, status, assigneeName },
     followUp: null,
   };
 }
@@ -202,24 +255,164 @@ function parseDeleteIntent(
   };
 }
 
+function parseAssignIntent(
+  lower: string
+): { parsed: AIAction | null; followUp: string | null } {
+  // "assign <task> to <person>"
+  const match = lower.match(
+    /assign\s+(?:the\s+)?(?:task\s+)?(?:about\s+|related to\s+|called\s+|named\s+)?["']?(.+?)["']?\s+to\s+(.+)/i
+  );
+
+  if (!match) {
+    return {
+      parsed: null,
+      followUp:
+        'Please specify the task and person. Example: "Assign login bug to John"',
+    };
+  }
+
+  const taskIdentifier = match[1].trim();
+  const assigneeName = match[2].trim();
+
+  if (!taskIdentifier) {
+    return {
+      parsed: null,
+      followUp: "Which task would you like to assign?",
+    };
+  }
+  if (!assigneeName) {
+    return {
+      parsed: null,
+      followUp: `Who would you like to assign "${taskIdentifier}" to?`,
+    };
+  }
+
+  return {
+    parsed: { action: "assign", taskIdentifier, assigneeName },
+    followUp: null,
+  };
+}
+
+function parseUnassignIntent(
+  lower: string
+): { parsed: AIAction | null; followUp: string | null } {
+  const match = lower.match(
+    /(?:unassign|remove\s+assignment\s+(?:from|of))\s+(?:the\s+)?(?:task\s+)?(?:about\s+|related to\s+|called\s+|named\s+)?(.+)/i
+  );
+
+  if (!match) {
+    return {
+      parsed: null,
+      followUp: "Which task would you like to unassign?",
+    };
+  }
+
+  return {
+    parsed: { action: "unassign", taskIdentifier: match[1].trim() },
+    followUp: null,
+  };
+}
+
+function parseListIntent(
+  lower: string
+): { parsed: AIAction | null; followUp: string | null } {
+  let filter: "all" | "mine" | "assigned_to_me" | "unassigned" | undefined;
+
+  if (lower.includes("my task") || lower.includes("i created") || lower.includes("mine")) {
+    filter = "mine";
+  } else if (lower.includes("assigned to me")) {
+    filter = "assigned_to_me";
+  } else if (lower.includes("unassigned") || lower.includes("not assigned")) {
+    filter = "unassigned";
+  } else {
+    filter = "all";
+  }
+
+  return {
+    parsed: { action: "list", filter },
+    followUp: null,
+  };
+}
+
+// Helper: get the project access filter for a user
+function projectAccessFilter(userId: string) {
+  return {
+    OR: [
+      { userId },
+      { members: { some: { userId } } },
+    ],
+  };
+}
+
 async function findTaskByIdentifier(identifier: string, userId: string) {
+  const accessFilter = {
+    project: projectAccessFilter(userId),
+  };
+
   const exactMatch = await prisma.task.findFirst({
     where: {
-      userId,
-      title: { equals: identifier, mode: "insensitive" },
+      ...accessFilter,
+      title: { equals: identifier, mode: "insensitive" as const },
     },
-    include: { project: { select: { name: true } } },
+    include: {
+      project: { select: { name: true } },
+      user: { select: { id: true, name: true } },
+      assignee: { select: { id: true, name: true } },
+    },
   });
   if (exactMatch) return exactMatch;
 
   const partialMatch = await prisma.task.findFirst({
     where: {
-      userId,
-      title: { contains: identifier, mode: "insensitive" },
+      ...accessFilter,
+      title: { contains: identifier, mode: "insensitive" as const },
     },
-    include: { project: { select: { name: true } } },
+    include: {
+      project: { select: { name: true } },
+      user: { select: { id: true, name: true } },
+      assignee: { select: { id: true, name: true } },
+    },
   });
   return partialMatch;
+}
+
+async function findMemberByName(name: string, projectId: string) {
+  const members = await prisma.projectMember.findMany({
+    where: { projectId },
+    include: { user: { select: { id: true, name: true, email: true } } },
+  });
+
+  const lowerName = name.toLowerCase();
+  const exact = members.find(
+    (m) => m.user.name.toLowerCase() === lowerName
+  );
+  if (exact) return exact.user;
+
+  const partial = members.find(
+    (m) => m.user.name.toLowerCase().includes(lowerName)
+  );
+  if (partial) return partial.user;
+
+  const emailMatch = members.find(
+    (m) => m.user.email.toLowerCase().includes(lowerName)
+  );
+  if (emailMatch) return emailMatch.user;
+
+  return null;
+}
+
+function formatTaskInfo(task: {
+  title: string;
+  status: string;
+  priority: string;
+  project: { name: string };
+  user?: { name: string } | null;
+  assignee?: { name: string } | null;
+}) {
+  let info = `"${task.title}" [${task.status}/${task.priority}] in "${task.project.name}"`;
+  if (task.user) info += ` (by ${task.user.name})`;
+  if (task.assignee) info += ` → assigned to ${task.assignee.name}`;
+  return info;
 }
 
 router.post("/command", async (req: AuthRequest, res: Response) => {
@@ -248,8 +441,13 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
     switch (parsed.action) {
       case "create": {
         const projects = await prisma.project.findMany({
-          where: { userId: req.userId! },
+          where: projectAccessFilter(req.userId!),
           orderBy: { createdAt: "desc" },
+          include: {
+            members: {
+              include: { user: { select: { id: true, name: true, email: true } } },
+            },
+          },
         });
 
         let projectId = parsed.projectId;
@@ -265,6 +463,24 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
           projectId = projects[0].id;
         }
 
+        let assigneeId: string | undefined;
+        if (parsed.assigneeName) {
+          const member = await findMemberByName(parsed.assigneeName, projectId);
+          if (!member) {
+            const projectMembers = await prisma.projectMember.findMany({
+              where: { projectId },
+              include: { user: { select: { name: true } } },
+            });
+            const memberNames = projectMembers.map((m) => m.user.name).join(", ");
+            res.json({
+              type: "follow_up",
+              message: `Could not find a team member named "${parsed.assigneeName}". Available members: ${memberNames || "none"}`,
+            });
+            return;
+          }
+          assigneeId = member.id;
+        }
+
         const task = await prisma.task.create({
           data: {
             title: parsed.title,
@@ -273,15 +489,21 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
             priority: parsed.priority || "MEDIUM",
             projectId,
             userId: req.userId!,
+            assigneeId: assigneeId || null,
           },
-          include: { project: { select: { name: true } } },
+          include: {
+            project: { select: { name: true } },
+            user: { select: { id: true, name: true } },
+            assignee: { select: { id: true, name: true } },
+          },
         });
 
-        res.json({
-          type: "success",
-          message: `Created task "${task.title}" in project "${task.project.name}" with ${task.priority} priority and status ${task.status}.`,
-          task,
-        });
+        let msg = `Created task "${task.title}" in project "${task.project.name}" with ${task.priority} priority and status ${task.status}.`;
+        if (task.assignee) {
+          msg += ` Assigned to ${task.assignee.name}.`;
+        }
+
+        res.json({ type: "success", message: msg, task });
         break;
       }
 
@@ -293,7 +515,7 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
         if (!task) {
           res.json({
             type: "follow_up",
-            message: `I couldn't find a task matching "${parsed.taskIdentifier}". Please check the task name and try again.`,
+            message: `I couldn't find a task matching "${parsed.taskIdentifier}" in your projects. Please check the task name and try again.`,
           });
           return;
         }
@@ -306,18 +528,23 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
         const updated = await prisma.task.update({
           where: { id: task.id },
           data: updateData,
-          include: { project: { select: { name: true } } },
+          include: {
+            project: { select: { name: true } },
+            user: { select: { id: true, name: true } },
+            assignee: { select: { id: true, name: true } },
+          },
         });
 
         const changes = [];
         if (parsed.status) changes.push(`status to ${parsed.status}`);
         if (parsed.priority) changes.push(`priority to ${parsed.priority}`);
 
-        res.json({
-          type: "success",
-          message: `Updated task "${updated.title}": ${changes.join(", ")}.`,
-          task: updated,
-        });
+        let msg = `Updated task "${updated.title}": ${changes.join(", ")}.`;
+        if (updated.assignee) {
+          msg += ` (assigned to ${updated.assignee.name})`;
+        }
+
+        res.json({ type: "success", message: msg, task: updated });
         break;
       }
 
@@ -329,7 +556,7 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
         if (!task) {
           res.json({
             type: "follow_up",
-            message: `I couldn't find a task matching "${parsed.taskIdentifier}". Please check the task name and try again.`,
+            message: `I couldn't find a task matching "${parsed.taskIdentifier}" in your projects. Please check the task name and try again.`,
           });
           return;
         }
@@ -339,6 +566,136 @@ router.post("/command", async (req: AuthRequest, res: Response) => {
         res.json({
           type: "success",
           message: `Deleted task "${task.title}" from project "${task.project.name}".`,
+        });
+        break;
+      }
+
+      case "assign": {
+        const task = await findTaskByIdentifier(
+          parsed.taskIdentifier,
+          req.userId!
+        );
+        if (!task) {
+          res.json({
+            type: "follow_up",
+            message: `I couldn't find a task matching "${parsed.taskIdentifier}" in your projects. Please check the task name and try again.`,
+          });
+          return;
+        }
+
+        const member = await findMemberByName(parsed.assigneeName, task.projectId);
+        if (!member) {
+          const projectMembers = await prisma.projectMember.findMany({
+            where: { projectId: task.projectId },
+            include: { user: { select: { name: true } } },
+          });
+          const memberNames = projectMembers.map((m) => m.user.name).join(", ");
+          res.json({
+            type: "follow_up",
+            message: `Could not find a team member named "${parsed.assigneeName}" in project "${task.project.name}". Available members: ${memberNames || "none"}`,
+          });
+          return;
+        }
+
+        const updated = await prisma.task.update({
+          where: { id: task.id },
+          data: { assigneeId: member.id },
+          include: {
+            project: { select: { name: true } },
+            user: { select: { id: true, name: true } },
+            assignee: { select: { id: true, name: true } },
+          },
+        });
+
+        res.json({
+          type: "success",
+          message: `Assigned task "${updated.title}" to ${member.name} in project "${updated.project.name}".`,
+          task: updated,
+        });
+        break;
+      }
+
+      case "unassign": {
+        const task = await findTaskByIdentifier(
+          parsed.taskIdentifier,
+          req.userId!
+        );
+        if (!task) {
+          res.json({
+            type: "follow_up",
+            message: `I couldn't find a task matching "${parsed.taskIdentifier}" in your projects.`,
+          });
+          return;
+        }
+
+        const updated = await prisma.task.update({
+          where: { id: task.id },
+          data: { assigneeId: null },
+          include: {
+            project: { select: { name: true } },
+            user: { select: { id: true, name: true } },
+            assignee: { select: { id: true, name: true } },
+          },
+        });
+
+        res.json({
+          type: "success",
+          message: `Unassigned task "${updated.title}" in project "${updated.project.name}".`,
+          task: updated,
+        });
+        break;
+      }
+
+      case "list": {
+        const accessFilter = {
+          project: projectAccessFilter(req.userId!),
+        };
+
+        let where: Record<string, unknown> = { ...accessFilter };
+
+        if (parsed.filter === "mine") {
+          where = { ...where, userId: req.userId! };
+        } else if (parsed.filter === "assigned_to_me") {
+          where = { ...where, assigneeId: req.userId! };
+        } else if (parsed.filter === "unassigned") {
+          where = { ...where, assigneeId: null };
+        }
+
+        const tasks = await prisma.task.findMany({
+          where,
+          include: {
+            project: { select: { name: true } },
+            user: { select: { id: true, name: true } },
+            assignee: { select: { id: true, name: true } },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        });
+
+        if (tasks.length === 0) {
+          res.json({
+            type: "success",
+            message: "No tasks found matching that filter.",
+          });
+          return;
+        }
+
+        const taskLines = tasks.map(
+          (t, i) => `${i + 1}. ${formatTaskInfo(t)}`
+        );
+
+        const filterLabel =
+          parsed.filter === "mine"
+            ? "your"
+            : parsed.filter === "assigned_to_me"
+            ? "assigned to you"
+            : parsed.filter === "unassigned"
+            ? "unassigned"
+            : "all";
+
+        res.json({
+          type: "success",
+          message: `Found ${tasks.length} ${filterLabel} task(s):\n${taskLines.join("\n")}`,
         });
         break;
       }
