@@ -87,9 +87,21 @@ export default function ProjectsPage() {
                   <h3>{p.name}</h3>
                 </Link>
                 <p>{p.description || "No description"}</p>
-                <span className="task-count">
-                  {p._count?.tasks || 0} tasks
-                </span>
+                <div className="project-meta">
+                  <span className="task-count">
+                    {p._count?.tasks || 0} tasks
+                  </span>
+                  {p.user && (
+                    <span className="owner-badge">
+                      Owner: {p.user.name}
+                    </span>
+                  )}
+                  {p.members && p.members.length > 1 && (
+                    <span className="member-count">
+                      {p.members.length} members
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="project-actions">
                 <Link

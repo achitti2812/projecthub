@@ -4,6 +4,14 @@ export interface User {
   name: string;
 }
 
+export interface ProjectMember {
+  id: string;
+  role: "OWNER" | "MEMBER";
+  createdAt: string;
+  userId: string;
+  user: { id: string; name: string; email: string };
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -11,8 +19,10 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   userId: string;
+  user?: { id: string; name: string; email: string };
   _count?: { tasks: number };
   tasks?: Task[];
+  members?: ProjectMember[];
 }
 
 export interface Task {
@@ -25,7 +35,10 @@ export interface Task {
   updatedAt: string;
   projectId: string;
   userId: string;
+  assigneeId?: string | null;
   project?: { name: string };
+  user?: { id: string; name: string };
+  assignee?: { id: string; name: string } | null;
 }
 
 export type TaskStatus = "TODO" | "IN_PROGRESS" | "DONE";

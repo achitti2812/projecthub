@@ -11,6 +11,7 @@ const createTaskSchema = z.object({
   status: z.enum(["TODO", "IN_PROGRESS", "DONE"]).optional(),
   priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
   projectId: z.string().uuid(),
+  assigneeId: z.string().uuid().optional().nullable(),
 });
 
 const updateTaskSchema = z.object({
@@ -18,19 +19,47 @@ const updateTaskSchema = z.object({
   description: z.string().optional(),
   status: z.enum(["TODO", "IN_PROGRESS", "DONE"]).optional(),
   priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+  assigneeId: z.string().uuid().optional().nullable(),
 });
 
 router.use(authenticate);
 
+// Helper: check if user has access to a project (owner or member)
+async function hasProjectAccess(userId: string, projectId: string): Promise<boolean> {
+  const project = await prisma.project.findFirst({
+    where: {
+      id: projectId,
+      OR: [
+        { userId },
+        { members: { some: { userId } } },
+      ],
+    },
+  });
+  return !!project;
+}
+
+// Get tasks - shows all tasks in projects the user has access to
 router.get("/", async (req: AuthRequest, res: Response) => {
   try {
     const { projectId } = req.query;
-    const where: Record<string, unknown> = { userId: req.userId! };
+
+    const where: Record<string, unknown> = {
+      project: {
+        OR: [
+          { userId: req.userId! },
+          { members: { some: { userId: req.userId! } } },
+        ],
+      },
+    };
     if (projectId) where.projectId = projectId as string;
 
     const tasks = await prisma.task.findMany({
       where,
-      include: { project: { select: { name: true } } },
+      include: {
+        project: { select: { name: true } },
+        user: { select: { id: true, name: true } },
+        assignee: { select: { id: true, name: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
     res.json(tasks);
@@ -39,19 +68,23 @@ router.get("/", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Stats - shows stats for all tasks in projects the user has access to
 router.get("/stats", async (req: AuthRequest, res: Response) => {
   try {
+    const accessFilter = {
+      project: {
+        OR: [
+          { userId: req.userId! },
+          { members: { some: { userId: req.userId! } } },
+        ],
+      },
+    };
+
     const [total, todo, inProgress, done] = await Promise.all([
-      prisma.task.count({ where: { userId: req.userId! } }),
-      prisma.task.count({
-        where: { userId: req.userId!, status: "TODO" },
-      }),
-      prisma.task.count({
-        where: { userId: req.userId!, status: "IN_PROGRESS" },
-      }),
-      prisma.task.count({
-        where: { userId: req.userId!, status: "DONE" },
-      }),
+      prisma.task.count({ where: accessFilter }),
+      prisma.task.count({ where: { ...accessFilter, status: "TODO" } }),
+      prisma.task.count({ where: { ...accessFilter, status: "IN_PROGRESS" } }),
+      prisma.task.count({ where: { ...accessFilter, status: "DONE" } }),
     ]);
     res.json({ total, todo, inProgress, done });
   } catch {
@@ -59,12 +92,25 @@ router.get("/stats", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Get single task (if user has access to its project)
 router.get("/:id", async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const task = await prisma.task.findFirst({
-      where: { id, userId: req.userId! },
-      include: { project: { select: { name: true } } },
+      where: {
+        id,
+        project: {
+          OR: [
+            { userId: req.userId! },
+            { members: { some: { userId: req.userId! } } },
+          ],
+        },
+      },
+      include: {
+        project: { select: { name: true } },
+        user: { select: { id: true, name: true } },
+        assignee: { select: { id: true, name: true } },
+      },
     });
     if (!task) {
       res.status(404).json({ error: "Task not found" });
@@ -76,21 +122,34 @@ router.get("/:id", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Create task (user must have access to the project)
 router.post("/", async (req: AuthRequest, res: Response) => {
   try {
     const data = createTaskSchema.parse(req.body);
 
-    const project = await prisma.project.findFirst({
-      where: { id: data.projectId, userId: req.userId! },
-    });
-    if (!project) {
+    if (!(await hasProjectAccess(req.userId!, data.projectId))) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
 
+    // If assigning to someone, verify they are a project member
+    if (data.assigneeId) {
+      const isMember = await prisma.projectMember.findFirst({
+        where: { userId: data.assigneeId, projectId: data.projectId },
+      });
+      if (!isMember) {
+        res.status(400).json({ error: "Assignee must be a project member" });
+        return;
+      }
+    }
+
     const task = await prisma.task.create({
       data: { ...data, userId: req.userId! },
-      include: { project: { select: { name: true } } },
+      include: {
+        project: { select: { name: true } },
+        user: { select: { id: true, name: true } },
+        assignee: { select: { id: true, name: true } },
+      },
     });
     res.status(201).json(task);
   } catch (error) {
@@ -102,23 +161,47 @@ router.post("/", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Update task (any project member can update)
 router.put("/:id", async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const data = updateTaskSchema.parse(req.body);
 
     const existing = await prisma.task.findFirst({
-      where: { id, userId: req.userId! },
+      where: {
+        id,
+        project: {
+          OR: [
+            { userId: req.userId! },
+            { members: { some: { userId: req.userId! } } },
+          ],
+        },
+      },
     });
     if (!existing) {
       res.status(404).json({ error: "Task not found" });
       return;
     }
 
+    // If assigning to someone, verify they are a project member
+    if (data.assigneeId) {
+      const isMember = await prisma.projectMember.findFirst({
+        where: { userId: data.assigneeId, projectId: existing.projectId },
+      });
+      if (!isMember) {
+        res.status(400).json({ error: "Assignee must be a project member" });
+        return;
+      }
+    }
+
     const task = await prisma.task.update({
       where: { id },
       data,
-      include: { project: { select: { name: true } } },
+      include: {
+        project: { select: { name: true } },
+        user: { select: { id: true, name: true } },
+        assignee: { select: { id: true, name: true } },
+      },
     });
     res.json(task);
   } catch (error) {
@@ -130,11 +213,20 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Delete task (any project member can delete)
 router.delete("/:id", async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const existing = await prisma.task.findFirst({
-      where: { id, userId: req.userId! },
+      where: {
+        id,
+        project: {
+          OR: [
+            { userId: req.userId! },
+            { members: { some: { userId: req.userId! } } },
+          ],
+        },
+      },
     });
     if (!existing) {
       res.status(404).json({ error: "Task not found" });
